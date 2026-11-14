@@ -1,0 +1,8 @@
+{
+  "name": "RG Crypto AI Copilot",
+  "description": "Monitoramento quantitativo de criptomoedas, gestão fracionada de carteira, análise com Gemini AI e gerador de robô autônomo 24/7 para WhatsApp.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
