@@ -7,6 +7,7 @@ import { Sparkline } from "./Sparkline";
 interface CryptoCardProps {
   coin: AnalyzedCoin;
   holdingUsd: number;
+  holdingQty?: number;
   whatsappPhone: string;
   onUpdateHolding: (coinId: string, usdValue: number) => void;
 }
@@ -14,21 +15,22 @@ interface CryptoCardProps {
 export const CryptoCard: React.FC<CryptoCardProps> = ({
   coin,
   holdingUsd,
+  holdingQty = 0,
   whatsappPhone,
   onUpdateHolding,
 }) => {
   const [inputValue, setInputValue] = useState<string>(
-    holdingUsd > 0 ? String(holdingUsd) : ""
+    holdingUsd > 0 ? holdingUsd.toFixed(2) : ""
   );
 
   useEffect(() => {
-    setInputValue(holdingUsd > 0 ? String(holdingUsd) : "");
+    setInputValue(holdingUsd > 0 ? holdingUsd.toFixed(2) : "");
   }, [holdingUsd]);
 
   const handleCommit = () => {
     const parsed = parseFloat(inputValue);
     const sanitized = Number.isNaN(parsed) || parsed < 0 ? 0 : parsed;
-    if (sanitized !== holdingUsd) {
+    if (Math.abs(sanitized - holdingUsd) > 0.01) {
       onUpdateHolding(coin.id, sanitized);
     }
   };
@@ -217,40 +219,53 @@ export const CryptoCard: React.FC<CryptoCardProps> = ({
       </div>
 
       {/* Footer: Holding Input + Direct WhatsApp Link */}
-      <div className="mt-4 pt-4 border-t border-slate-800/80 flex items-center gap-2.5">
-        <label className="flex items-center gap-2 bg-[#070B14] border border-slate-800 focus-within:border-emerald-500 rounded-lg px-3 h-10 flex-1 min-w-0">
-          <span className="text-xs text-slate-500 whitespace-nowrap">
-            Saldo $
-          </span>
-          <input
-            type="number"
-            min="0"
-            step="any"
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onBlur={handleCommit}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                handleCommit();
-                (e.target as HTMLInputElement).blur();
-              }
-            }}
-            placeholder="0.00"
-            aria-label={`Saldo em USD para ${coin.name}`}
-            className="bg-transparent font-mono text-xs font-semibold text-white w-full focus:outline-none"
-          />
-        </label>
+      <div className="mt-4 pt-4 border-t border-slate-800/80 space-y-2">
+        {holdingQty > 0 && (
+          <div className="flex items-center justify-between text-[11px] font-mono text-slate-400">
+            <span>Sincronizado da Carteira</span>
+            <span className="text-slate-200">
+              {holdingQty >= 1
+                ? holdingQty.toFixed(4).replace(/\.?0+$/, "")
+                : holdingQty.toFixed(6).replace(/\.?0+$/, "")}{" "}
+              {coin.symbol}
+            </span>
+          </div>
+        )}
+        <div className="flex items-center gap-2.5">
+          <label className="flex items-center gap-2 bg-[#070B14] border border-slate-800 focus-within:border-emerald-500 rounded-lg px-3 h-10 flex-1 min-w-0">
+            <span className="text-xs text-slate-500 whitespace-nowrap">
+              Saldo $
+            </span>
+            <input
+              type="number"
+              min="0"
+              step="any"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onBlur={handleCommit}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  handleCommit();
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
+              placeholder="0.00"
+              aria-label={`Saldo em USD para ${coin.name}`}
+              className="bg-transparent font-mono text-xs font-semibold text-white w-full focus:outline-none"
+            />
+          </label>
 
-        <a
-          href={whatsappHref}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="h-10 px-3.5 rounded-lg bg-slate-800/80 hover:bg-emerald-500/15 border border-slate-700/80 hover:border-emerald-500/40 text-xs font-semibold text-emerald-300 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
-          title={`Enviar sinal de ${coin.symbol} para o WhatsApp`}
-        >
-          <MessageSquare className="w-3.5 h-3.5" />
-          <span>WhatsApp</span>
-        </a>
+          <a
+            href={whatsappHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="h-10 px-3.5 rounded-lg bg-slate-800/80 hover:bg-emerald-500/15 border border-slate-700/80 hover:border-emerald-500/40 text-xs font-semibold text-emerald-300 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+            title={`Enviar sinal de ${coin.symbol} para o WhatsApp`}
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+            <span>WhatsApp</span>
+          </a>
+        </div>
       </div>
     </article>
   );

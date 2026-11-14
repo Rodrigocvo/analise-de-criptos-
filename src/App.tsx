@@ -13,6 +13,7 @@ import {
   TrendingUp,
   Volume2,
   VolumeX,
+  Wallet,
   X,
   Zap,
 } from "lucide-react";
@@ -20,18 +21,22 @@ import { AlertsHistoryView } from "./components/AlertsHistoryView";
 import { BrainCalibrationView } from "./components/BrainCalibrationView";
 import { CloudBotView } from "./components/CloudBotView";
 import { CryptoCard } from "./components/CryptoCard";
+import { TransactionModal } from "./components/TransactionModal";
+import { WalletView } from "./components/WalletView";
 import type {
   ActiveTab,
   AlertLogEntry,
   AnalyzedCoin,
   BacktestMetrics,
   CalibrationLogEntry,
+  PortfolioTransaction,
   RawMarketCoin,
   RiskProfile,
   SignalFilter,
   UserPortfolio,
   UserSettings,
 } from "./types/crypto";
+import { computeCoinPortfolioStats } from "./utils/portfolioMath";
 import {
   analyzeCoinQuantitatively,
   buildFallbackCoin,
@@ -42,11 +47,13 @@ import {
 } from "./utils/quantEngine";
 
 const STORAGE_PORTFOLIO = "rg_crypto_portfolio_v1";
+const STORAGE_TRANSACTIONS = "rg_crypto_transactions_v1";
 const STORAGE_SETTINGS = "rg_crypto_settings_v1";
 const STORAGE_ALERTS = "rg_crypto_alerts_v1";
 
 const DEFAULT_SETTINGS: UserSettings = {
   whatsapp: "",
+  portfolioName: "MINHA CARTEIRA",
   profile: "moderate",
   soundEnabled: true,
   rsiBuyThreshold: 34,
@@ -79,17 +86,21 @@ function loadInitialPortfolio(): UserPortfolio {
   } catch {
     parsed = {};
   }
-  const hasAny = Object.values(parsed).some(
-    (v) => v && (v.usd > 0 || v.qty > 0)
-  );
   const result: UserPortfolio = {};
   for (const c of COINS_CONFIG) {
-    result[c.id] = parsed[c.id] ?? {
-      usd: !hasAny && c.id === "bitcoin" ? 100 : 0,
-      qty: 0,
-    };
+    result[c.id] = parsed[c.id] ?? { usd: 0, qty: 0 };
   }
   return result;
+}
+
+function loadInitialTransactions(): PortfolioTransaction[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_TRANSACTIONS);
+    if (raw) return JSON.parse(raw) as PortfolioTransaction[];
+  } catch {
+    // ignore storage errors
+  }
+  return [];
 }
 
 function loadInitialSettings(): UserSettings {
@@ -142,17 +153,25 @@ function playAlertTone(type: "BUY" | "SELL") {
 }
 
 export function App() {
-  const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
+  const [activeTab, setActiveTab] = useState<ActiveTab>("wallet");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const [portfolio, setPortfolio] = useState<UserPortfolio>(loadInitialPortfolio);
+  const [transactions, setTransactions] = useState<PortfolioTransaction[]>(
+    loadInitialTransactions
+  );
+  const [txModalOpen, setTxModalOpen] = useState(false);
+  const [txModalCoinId, setTxModalCoinId] = useState<string | undefined>(
+    undefined
+  );
   const [settings, setSettings] = useState<UserSettings>(loadInitialSettings);
   const [alerts, setAlerts] = useState<AlertLogEntry[]>(loadInitialAlerts);
 
   const [marketMap, setMarketMap] = useState<Record<string, RawMarketCoin>>({});
   const [isLoadingMarket, setIsLoadingMarket] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [feedSource, setFeedSource] = useState<"coingecko" | "fallback">("coingecko");
+  const [feedSource, setFeedSource] = useState<string>("okx-spot");
+  const [lastSyncedAt, setLastSyncedAt] = useState<string>("");
   const [countdown, setCountdown] = useState(30);
 
   const [filter, setFilter] = useState<SignalFilter>("ALL");
@@ -197,9 +216,11 @@ export function App() {
     async (isManual = false) => {
       setIsRefreshing(true);
       try {
-        const res = await fetch("/api/market");
+        const endpoint = isManual ? "/api/market?fresh=1" : "/api/market";
+        const res = await fetch(endpoint, { cache: "no-store" });
         const payload = (await res.json()) as {
           source?: string;
+          updatedAt?: number;
           coins?: CoinGeckoMarketItem[];
         };
 
@@ -236,8 +257,16 @@ export function App() {
           return next;
         });
 
-        setFeedSource("coingecko");
-        if (isManual) notify("Cotações atualizadas em tempo real.", "success");
+        setFeedSource(payload.source || "okx-spot");
+        const syncDate = payload.updatedAt ? new Date(payload.updatedAt) : new Date();
+        setLastSyncedAt(
+          syncDate.toLocaleTimeString("pt-BR", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          })
+        );
+        if (isManual) notify("Cotações sincronizadas em tempo real.", "success");
       } catch {
         setMarketMap((prev) => {
           const next: Record<string, RawMarketCoin> = {};
@@ -294,18 +323,46 @@ export function App() {
 
   useEffect(() => {
     try {
+      localStorage.setItem(STORAGE_TRANSACTIONS, JSON.stringify(transactions));
+    } catch {
+      // ignore
+    }
+  }, [transactions]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem(STORAGE_ALERTS, JSON.stringify(alerts));
     } catch {
       // ignore
     }
   }, [alerts]);
 
-  const analyzedCoins: AnalyzedCoin[] = useMemo(() => {
-    return COINS_CONFIG.map((cfg) => {
+  // First compute base market analysis using manual portfolio, then derive live wallet quantities from transactions
+  const effectivePortfolio: UserPortfolio = useMemo(() => {
+    const baseCoins: AnalyzedCoin[] = COINS_CONFIG.map((cfg) => {
       const raw = marketMap[cfg.id] ?? buildFallbackCoin(cfg);
       return analyzeCoinQuantitatively(raw, portfolio, settings);
     });
-  }, [marketMap, portfolio, settings]);
+    const { derivedPortfolio } = computeCoinPortfolioStats(
+      baseCoins,
+      transactions
+    );
+    const merged: UserPortfolio = {};
+    for (const cfg of COINS_CONFIG) {
+      const hasTxForCoin = transactions.some((t) => t.coinId === cfg.id);
+      merged[cfg.id] = hasTxForCoin
+        ? derivedPortfolio[cfg.id]
+        : portfolio[cfg.id] ?? { usd: 0, qty: 0 };
+    }
+    return merged;
+  }, [marketMap, portfolio, settings, transactions]);
+
+  const analyzedCoins: AnalyzedCoin[] = useMemo(() => {
+    return COINS_CONFIG.map((cfg) => {
+      const raw = marketMap[cfg.id] ?? buildFallbackCoin(cfg);
+      return analyzeCoinQuantitatively(raw, effectivePortfolio, settings);
+    });
+  }, [marketMap, effectivePortfolio, settings]);
 
   // Detect signal transitions and log alerts
   useEffect(() => {
@@ -407,15 +464,66 @@ export function App() {
   }, [analyzedCoins, filter, searchQuery]);
 
   const handleUpdateHolding = (coinId: string, usdValue: number) => {
+    const coin = analyzedCoins.find((c) => c.id === coinId);
+    const livePrice = coin?.price || 1;
+    const currentUsd = effectivePortfolio[coinId]?.usd ?? 0;
+    const deltaUsd = usdValue - currentUsd;
+
+    if (Math.abs(deltaUsd) > 0.01) {
+      const now = new Date();
+      const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
+      const dateStr = local.toISOString().slice(0, 16);
+
+      if (usdValue === 0) {
+        setTransactions((prev) => prev.filter((t) => t.coinId !== coinId));
+      } else {
+        const txQty = Math.abs(deltaUsd) / livePrice;
+        const newTx: PortfolioTransaction = {
+          id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          coinId,
+          type: deltaUsd > 0 ? "BUY" : "SELL",
+          quantity: Number(txQty.toFixed(6)),
+          pricePerCoin: livePrice,
+          feeUsd: 0,
+          date: dateStr,
+          note: "Ajuste rápido via Radar",
+        };
+        setTransactions((prev) => [...prev, newTx]);
+      }
+    }
+
     setPortfolio((prev) => ({
       ...prev,
-      [coinId]: { usd: usdValue, qty: 0 },
+      [coinId]: { usd: usdValue, qty: usdValue / livePrice },
     }));
     const cfg = COINS_CONFIG.find((c) => c.id === coinId);
     notify(
-      `Saldo de ${cfg?.symbol ?? coinId.toUpperCase()} atualizado para $${usdValue.toFixed(2)}.`,
+      `Saldo de ${cfg?.symbol ?? coinId.toUpperCase()} sincronizado: $${usdValue.toFixed(2)}.`,
       "success"
     );
+  };
+
+  const handleOpenAddTransaction = (coinId?: string) => {
+    setTxModalCoinId(coinId);
+    setTxModalOpen(true);
+  };
+
+  const handleAddTransaction = (txData: Omit<PortfolioTransaction, "id">) => {
+    const newTx: PortfolioTransaction = {
+      ...txData,
+      id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    };
+    setTransactions((prev) => [...prev, newTx]);
+    const cfg = COINS_CONFIG.find((c) => c.id === txData.coinId);
+    notify(
+      `${txData.type === "BUY" ? "Compra" : "Venda"} de ${txData.quantity} ${cfg?.symbol ?? ""} registrada na Carteira.`,
+      "success"
+    );
+  };
+
+  const handleDeleteTransaction = (txId: string) => {
+    setTransactions((prev) => prev.filter((t) => t.id !== txId));
+    notify("Transação removida da carteira.", "info");
   };
 
   const handleRunAutoCalibration = () => {
@@ -491,7 +599,8 @@ export function App() {
   );
 
   const tabTitles: Record<ActiveTab, string> = {
-    dashboard: "Radar & Carteira Fracionada",
+    wallet: "Carteira & Estatísticas",
+    dashboard: "Radar & Gestão Fracionada",
     brain: "Cérebro IA & Auto-Calibragem",
     alerts: "Histórico de Sinais",
     cloud: "Robô WhatsApp 24/7",
@@ -567,6 +676,28 @@ export function App() {
           <nav className="p-4 space-y-1" aria-label="Navegação principal">
             <button
               onClick={() => {
+                setActiveTab("wallet");
+                setMobileMenuOpen(false);
+              }}
+              className={`w-full h-10 px-3 rounded-lg text-xs font-medium flex items-center justify-between transition-colors cursor-pointer whitespace-nowrap ${
+                activeTab === "wallet"
+                  ? "bg-slate-800/80 text-white"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"
+              }`}
+            >
+              <span className="flex items-center gap-3">
+                <Wallet className="w-4 h-4 text-blue-400 shrink-0" />
+                <span>Carteira</span>
+              </span>
+              {kpis.totalPortfolioUsd > 0 && (
+                <span className="font-mono text-[11px] text-slate-300">
+                  ${kpis.totalPortfolioUsd.toFixed(0)}
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => {
                 setActiveTab("dashboard");
                 setMobileMenuOpen(false);
               }}
@@ -577,7 +708,7 @@ export function App() {
               }`}
             >
               <LayoutGrid className="w-4 h-4 text-emerald-400 shrink-0" />
-              <span>Radar & Carteira</span>
+              <span>Radar & Sinais</span>
             </button>
 
             <button
@@ -720,15 +851,27 @@ export function App() {
           <div className="hidden md:flex items-center gap-2.5 text-xs text-slate-400 whitespace-nowrap shrink-0">
             <Activity className="w-3.5 h-3.5 text-emerald-400" />
             <span>
-              {feedSource === "coingecko"
-                ? "CoinGecko ao vivo"
-                : "Modo contingência"}
+              {feedSource.startsWith("okx")
+                ? "OKX Spot ao vivo"
+                : feedSource.startsWith("coinpaprika")
+                  ? "CoinPaprika ao vivo"
+                  : feedSource.startsWith("coingecko")
+                    ? "CoinGecko ao vivo"
+                    : "Modo contingência"}
             </span>
+            {lastSyncedAt && (
+              <>
+                <span className="text-slate-600" aria-hidden="true">
+                  ·
+                </span>
+                <span className="font-mono text-slate-400">{lastSyncedAt}</span>
+              </>
+            )}
             <span className="text-slate-600" aria-hidden="true">
               ·
             </span>
             <span className="font-mono text-slate-300">
-              Leitura em {countdown}s
+              {countdown}s
             </span>
           </div>
 
@@ -846,6 +989,24 @@ export function App() {
           </section>
 
           {/* Active Tab Content */}
+          {activeTab === "wallet" && (
+            <WalletView
+              analyzedCoins={analyzedCoins}
+              transactions={transactions}
+              portfolioName={settings.portfolioName}
+              whatsappPhone={settings.whatsapp}
+              onUpdatePortfolioName={(portfolioName) =>
+                setSettings((prev) => ({ ...prev, portfolioName }))
+              }
+              onUpdateWhatsappPhone={(whatsapp) =>
+                setSettings((prev) => ({ ...prev, whatsapp }))
+              }
+              onOpenAddTransaction={handleOpenAddTransaction}
+              onDeleteTransaction={handleDeleteTransaction}
+              onNotify={notify}
+            />
+          )}
+
           {activeTab === "dashboard" && (
             <section className="space-y-5">
               {/* Filter, Search & WhatsApp Toolbar */}
@@ -967,7 +1128,8 @@ export function App() {
                     <CryptoCard
                       key={coin.id}
                       coin={coin}
-                      holdingUsd={portfolio[coin.id]?.usd ?? 0}
+                      holdingUsd={effectivePortfolio[coin.id]?.usd ?? 0}
+                      holdingQty={effectivePortfolio[coin.id]?.qty ?? 0}
                       whatsappPhone={settings.whatsapp}
                       onUpdateHolding={handleUpdateHolding}
                     />
@@ -1002,7 +1164,7 @@ export function App() {
 
           {activeTab === "cloud" && (
             <CloudBotView
-              portfolio={portfolio}
+              portfolio={effectivePortfolio}
               settings={settings}
               onNotify={notify}
             />
@@ -1013,6 +1175,14 @@ export function App() {
           RG Crypto AI Copilot · Análise quantitativa e gestão fracionada de risco.
         </footer>
       </div>
+
+      <TransactionModal
+        isOpen={txModalOpen}
+        initialCoinId={txModalCoinId}
+        analyzedCoins={analyzedCoins}
+        onClose={() => setTxModalOpen(false)}
+        onAddTransaction={handleAddTransaction}
+      />
     </div>
   );
 }

@@ -1,7 +1,9 @@
 export type RiskProfile = "conservative" | "moderate" | "aggressive";
 export type SignalAction = "BUY" | "SELL" | "WAIT";
-export type ActiveTab = "dashboard" | "brain" | "alerts" | "cloud";
+export type ActiveTab = "wallet" | "dashboard" | "brain" | "alerts" | "cloud";
 export type SignalFilter = "ALL" | SignalAction;
+export type TransactionType = "BUY" | "SELL";
+export type ChartTimeframe = "24h" | "7d" | "30d" | "90d" | "All";
 
 export interface CoinConfig {
   id: string;
@@ -46,8 +48,45 @@ export interface PortfolioHolding {
 
 export type UserPortfolio = Record<string, PortfolioHolding>;
 
+export interface PortfolioTransaction {
+  id: string;
+  coinId: string;
+  type: TransactionType;
+  quantity: number;
+  pricePerCoin: number;
+  feeUsd: number;
+  date: string; // ISO string YYYY-MM-DDTHH:mm
+  note?: string;
+}
+
+export interface CoinPortfolioStat {
+  coin: AnalyzedCoin;
+  quantity: number;
+  holdingsUsd: number;
+  costBasisUsd: number;
+  avgBuyPrice: number;
+  unrealizedPnlUsd: number;
+  realizedPnlUsd: number;
+  totalPnlUsd: number;
+  totalPnlPct: number;
+  allocationPct: number;
+}
+
+export interface PortfolioSummaryStats {
+  totalHoldingsUsd: number;
+  totalCostBasisUsd: number;
+  allTimeProfitUsd: number;
+  allTimeProfitPct: number;
+  change24hUsd: number;
+  change24hPct: number;
+  bestPerformer: CoinPortfolioStat | null;
+  worstPerformer: CoinPortfolioStat | null;
+  activeAssetsCount: number;
+}
+
 export interface UserSettings {
   whatsapp: string;
+  portfolioName: string;
   profile: RiskProfile;
   soundEnabled: boolean;
   rsiBuyThreshold: number;
